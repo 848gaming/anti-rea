@@ -1,0 +1,26 @@
+{
+  "name": "anti-rea",
+  "version": "1.0.0",
+  "description": "Counter-Reverse-Engineering, Binary Armor & Cryptographic Code-Lock Toolkit engineered to defeat AI reverse-engineering agents (morluto/rea, Ghidra, JADX, Wakaru, Frida).",
+  "type": "module",
+  "bin": {
+    "anti-rea": "./bin/anti-rea.mjs"
+  },
+  "scripts": {
+    "start": "node ./bin/anti-rea.mjs",
+    "test": "node --test ./test/anti-rea.test.mjs",
+    "demo": "node ./scripts/demo.mjs"
+  },
+  "keywords": [
+    "reverse-engineering-defense",
+    "anti-rea",
+    "code-lock",
+    "obfuscation",
+    "electron-fuses",
+    "flutter-security",
+    "android-security",
+    "dotnet-protection",
+    "anti-frida"
+  ],
+  "license": "MIT"
+}
