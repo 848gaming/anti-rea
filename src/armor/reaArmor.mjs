@@ -8,12 +8,14 @@ import {
 } from '../audit/reaAuditor.mjs';
 
 /**
- * 1. JavaScript / Electron / Web Bundle Armor
+ * 1. JavaScript / Electron / Web Bundle Armor (v2.0)
  * Specifically engineered to blind morluto/rea `analyze_javascript_application` and Wakaru:
  *  - Strips sourceMappingURL directives
  *  - Moves string literals (IPC channels, contextBridge keys, GraphQL queries, URLs) into a rolling-XOR vault
  *  - Rewrites static member calls (.handle, .invoke, .exposeInMainWorld, .useQuery, .useMutation, .query, .mutate)
  *    into computed bracket expressions `obj[__reaV(idx)](...)` so REA's static AST graph extractor finds 0 edges.
+ *  - Flattens the vault decoder with a state-machine switch loop and opaque predicates.
+ *  - Optionally mangles local identifiers (`options.mangleIdentifiers = true`) into `_0x...` hex names.
  */
 export function armorJavaScriptSource(sourceCode, options = {}) {
   const key = options.xorKey || crypto.randomBytes(16);
@@ -89,24 +91,94 @@ export function armorJavaScriptSource(sourceCode, options = {}) {
     }
   );
 
-  const runtimePrelude = `/* [ANTI-REA ARMORED BUNDLE] Static AST & Wakaru Reconstruction Shield */
+  // Optional Identifier Mangling for internal helper declarations
+  const mangledMap = {};
+  if (options.mangleIdentifiers) {
+    const reserved = new Set([
+      ...(options.preserveIdentifiers || []),
+      'ipcMain',
+      'ipcRenderer',
+      'contextBridge',
+      'Buffer',
+      'Object',
+      'Array',
+      'String',
+      'Number',
+      'Boolean',
+      'Promise',
+      'Error',
+      'Math',
+      'JSON',
+      'console',
+      'process',
+      'require',
+      'module',
+      'exports',
+      'window',
+      'document',
+      'globalThis',
+      '__reaV',
+      '__reaKey',
+      '__reaData',
+      '__reaCache'
+    ]);
+    const declRegex = /\b(?:const|let|var|function)\s+([a-zA-Z_$][a-zA-Z0-9_$]{2,})\b/g;
+    let dm;
+    let counter = 0x10a0;
+    while ((dm = declRegex.exec(transformed)) !== null) {
+      const id = dm[1];
+      if (!reserved.has(id) && !mangledMap[id]) {
+        mangledMap[id] = `_0x${(counter++).toString(16)}`;
+      }
+    }
+    for (const [origId, obfId] of Object.entries(mangledMap)) {
+      const idReg = new RegExp(`(?<!\\.)\\b${origId}\\b(?!\\s*:)`, 'g');
+      transformed = transformed.replace(idReg, obfId);
+    }
+  }
+
+  // Control-flow flattened state-machine prelude with opaque mathematical predicate
+  const runtimePrelude = `/* [ANTI-REA v2.0 ARMORED BUNDLE] Flattened Control-Flow & Polymorphic String Vault */
 const __reaKey = [${Array.from(key).join(',')}];
 const __reaData = ${JSON.stringify(vaultEntries)};
 const __reaCache = Object.create(null);
 function __reaV(i) {
-  if (__reaCache[i] !== undefined) return __reaCache[i];
-  const raw = Buffer.from(__reaData[i], 'base64');
-  const out = Buffer.allocUnsafe(raw.length);
-  for (let j = 0; j < raw.length; j++) {
-    out[j] = raw[j] ^ __reaKey[j % __reaKey.length] ^ ((j * 31) & 0xff);
+  let _st = ((i * i + i) & 1) === 0 ? 0x11 : 0xff; // Opaque predicate: n(n+1) is always even
+  let _raw, _out;
+  while (_st !== 0x99) {
+    switch (_st) {
+      case 0x11:
+        if (__reaCache[i] !== undefined) return __reaCache[i];
+        _st = 0x22;
+        break;
+      case 0x22:
+        _raw = Buffer.from(__reaData[i], 'base64');
+        _out = Buffer.allocUnsafe(_raw.length);
+        _st = 0x33;
+        break;
+      case 0x33:
+        for (let j = 0; j < _raw.length; j++) {
+          _out[j] = _raw[j] ^ __reaKey[j % __reaKey.length] ^ ((j * 31) & 0xff);
+        }
+        _st = 0x44;
+        break;
+      case 0x44:
+        __reaCache[i] = _out.toString('utf8');
+        _st = 0x99;
+        break;
+      default:
+        return '';
+    }
   }
-  return (__reaCache[i] = out.toString('utf8'));
+  return __reaCache[i];
 }
 `;
 
   return {
     armoredCode: runtimePrelude + '\n' + transformed,
-    encryptedStringsCount: vaultEntries.length
+    encryptedStringsCount: vaultEntries.length,
+    mangledIdentifiersCount: Object.keys(mangledMap).length,
+    mangledMap
   };
 }
 
@@ -151,13 +223,21 @@ export function armorElectronFusesInBuffer(buf) {
 }
 
 /**
- * 3. Flutter `libapp.so` AOT Snapshot Armor
+ * 3. Flutter `libapp.so` AOT Snapshot Armor (v2.0)
  * Directly counters morluto/rea `identify_flutter_build` and `inspect_dart_aot`:
  *  - Scrubs `package:<name>/<path>.dart` URIs in the Isolate snapshot string pool in-place with
  *    exact-length deterministic obfuscated identifiers so ELF offsets remain 100% intact while
  *    REA's `package_uris` projection returns 0 exposed package paths.
- *  - Anonymizes the 32-byte Dart VM SDK snapshot hash located 20 bytes after `0xf5f5dcdc` so
- *    REA / reFlutter cannot map the binary to a stock Dart SDK snapshot parser layout.
+ *  - Scrubs the 32-byte Dart VM SDK snapshot hash located 20 bytes after `0xf5f5dcdc` with a
+ *    non-hex marker (`ANTI_REA_SCRUBBED_DART_SDK_HASH_`) so REA cannot map the binary to a stock Dart SDK.
+ *  - Supports TWO symbol protection modes:
+ *    a) `safeDlsym: true`: Preserves `_kDart*Snapshot*` names for stock `libflutter.so` `dlsym()`
+ *       while injecting a conflicting ELF64 `PT_LOAD` program header mapping — exploiting REA's
+ *       exact rule in `docs/flutter-analysis.md`:
+ *       "Address resolution examines every overlapping PT_LOAD interpretation... conflicting mappings
+ *        leave affected symbols unresolved and qualify coverage."
+ *    b) `stripSymbols: true` (default for custom JNI/FFI loaders): Also renames `_kDart*Snapshot*`
+ *       symbol names in-place.
  */
 export function armorFlutterBinaryInBuffer(buf, options = {}) {
   const clone = Buffer.from(buf);
@@ -172,13 +252,12 @@ export function armorFlutterBinaryInBuffer(buf, options = {}) {
     const matchStr = m[0];
     const startOffset = m.index;
     const digest = crypto.createHash('sha256').update(matchStr).digest('hex');
-    // Replace "package:..." with "obf_pkg:..." of the exact same byte length
     const replacement = ('obf_pkg:' + digest.repeat(4)).slice(0, matchStr.length);
     Buffer.from(replacement, 'latin1').copy(clone, startOffset);
     scrubbedPackageUris++;
   }
 
-  // 2. Anonymize the 32-byte hex Dart SDK snapshot hash 20 bytes after 0xf5f5dcdc magic
+  // 2. Scrub the 32-byte hex Dart SDK snapshot hash 20 bytes after 0xf5f5dcdc magic
   for (const magic of [DART_SNAPSHOT_MAGIC_LE, DART_SNAPSHOT_MAGIC_BE]) {
     let pos = 0;
     while ((pos = clone.indexOf(magic, pos)) !== -1) {
@@ -186,7 +265,6 @@ export function armorFlutterBinaryInBuffer(buf, options = {}) {
       if (hashStart + 32 <= clone.length) {
         const currentHash = clone.subarray(hashStart, hashStart + 32).toString('utf8');
         if (/^[0-9a-f]{32}$/i.test(currentHash)) {
-          // Replace with exact 32-byte non-hex marker so REA's 32-hex-char snapshot_hash scanner is blinded
           const customHash = 'ANTI_REA_SCRUBBED_DART_SDK_HASH_';
           Buffer.from(customHash, 'utf8').copy(clone, hashStart);
           anonymizedSnapshotHashes++;
@@ -196,9 +274,13 @@ export function armorFlutterBinaryInBuffer(buf, options = {}) {
     }
   }
 
-  // 3. Optionally mask `_kDart*Snapshot*` symbol names if using a custom loader (when options.stripSymbols = true)
+  // 3. Inject ELF64 overlapping conflicting PT_LOAD mapping if ELF program headers exist
+  const ptLoadConflictInjected = injectElf64PtLoadConflict(clone);
+
+  // 4. Mask `_kDart*Snapshot*` symbol names unless `safeDlsym: true` is requested for stock libflutter.so
   let maskedSymbols = 0;
-  if (options.stripSymbols !== false) {
+  const shouldStripSymbols = options.safeDlsym ? false : options.stripSymbols !== false;
+  if (shouldStripSymbols) {
     const symMap = {
       _kDartVmSnapshotData: '_xAegisVmSnapDat0000',
       _kDartVmSnapshotInstructions: '_xAegisVmSnapIns000000000000',
@@ -221,8 +303,125 @@ export function armorFlutterBinaryInBuffer(buf, options = {}) {
     armoredBuffer: clone,
     scrubbedPackageUris,
     anonymizedSnapshotHashes,
-    maskedSymbols
+    maskedSymbols,
+    ptLoadConflictInjected,
+    safeDlsym: Boolean(options.safeDlsym)
   };
+}
+
+/**
+ * Exploits morluto/rea's ELF PT_LOAD overlap check (`docs/flutter-analysis.md`):
+ * "Address resolution examines every overlapping PT_LOAD interpretation, including partial overlaps.
+ *  Equivalent mappings are coalesced; conflicting mappings leave affected symbols unresolved."
+ * Finds a spare PT_NULL (p_type=0) or PT_NOTE (p_type=4) slot in an ELF64 little-endian header
+ * and converts it into a zero-filesz overlapping PT_LOAD segment with a conflicting p_offset.
+ */
+export function injectElf64PtLoadConflict(buf) {
+  // Check ELF64 LE magic: 0x7f 'E' 'L' 'F', EI_CLASS=2 (64-bit), EI_DATA=1 (LE)
+  if (
+    buf.length < 64 ||
+    buf[0] !== 0x7f ||
+    buf[1] !== 0x45 ||
+    buf[2] !== 0x4c ||
+    buf[3] !== 0x46 ||
+    buf[4] !== 0x02 ||
+    buf[5] !== 0x01
+  ) {
+    return false;
+  }
+
+  const phoff = Number(buf.readBigUInt64LE(32));
+  const phentsize = buf.readUInt16LE(54);
+  const phnum = buf.readUInt16LE(56);
+
+  if (phoff === 0 || phentsize !== 56 || phnum < 2 || phoff + phnum * phentsize > buf.length) {
+    return false;
+  }
+
+  let primaryLoad = null;
+  let spareSlotOffset = -1;
+
+  for (let i = 0; i < phnum; i++) {
+    const entryOff = phoff + i * phentsize;
+    const pType = buf.readUInt32LE(entryOff);
+    if (pType === 1 && !primaryLoad) {
+      // PT_LOAD = 1
+      primaryLoad = {
+        flags: buf.readUInt32LE(entryOff + 4),
+        offset: buf.readBigUInt64LE(entryOff + 8),
+        vaddr: buf.readBigUInt64LE(entryOff + 16),
+        paddr: buf.readBigUInt64LE(entryOff + 24),
+        filesz: buf.readBigUInt64LE(entryOff + 32),
+        memsz: buf.readBigUInt64LE(entryOff + 40),
+        align: buf.readBigUInt64LE(entryOff + 48)
+      };
+    } else if ((pType === 0 || pType === 4) && spareSlotOffset === -1) {
+      // PT_NULL (0) or PT_NOTE (4) slot
+      spareSlotOffset = entryOff;
+    }
+  }
+
+  if (!primaryLoad || spareSlotOffset === -1) {
+    return false;
+  }
+
+  // Write conflicting overlapping PT_LOAD: same vaddr & memsz, but offset shifted by +0x1000 and filesz=0
+  buf.writeUInt32LE(1, spareSlotOffset); // p_type = PT_LOAD (1)
+  buf.writeUInt32LE(primaryLoad.flags, spareSlotOffset + 4);
+  buf.writeBigUInt64LE(primaryLoad.offset + 0x1000n, spareSlotOffset + 8); // conflicting file offset!
+  buf.writeBigUInt64LE(primaryLoad.vaddr, spareSlotOffset + 16); // overlapping vaddr!
+  buf.writeBigUInt64LE(primaryLoad.paddr, spareSlotOffset + 24);
+  buf.writeBigUInt64LE(0n, spareSlotOffset + 32); // p_filesz = 0 (no extra disk bytes mapped)
+  buf.writeBigUInt64LE(primaryLoad.memsz, spareSlotOffset + 40); // overlapping memsz!
+  buf.writeBigUInt64LE(primaryLoad.align, spareSlotOffset + 48);
+
+  return true;
+}
+
+/**
+ * Checks whether an ELF64 binary contains conflicting overlapping PT_LOAD segments that blind REA.
+ */
+export function hasConflictingElf64PtLoad(buf) {
+  if (
+    buf.length < 64 ||
+    buf[0] !== 0x7f ||
+    buf[1] !== 0x45 ||
+    buf[2] !== 0x4c ||
+    buf[3] !== 0x46 ||
+    buf[4] !== 0x02 ||
+    buf[5] !== 0x01
+  ) {
+    return false;
+  }
+  const phoff = Number(buf.readBigUInt64LE(32));
+  const phentsize = buf.readUInt16LE(54);
+  const phnum = buf.readUInt16LE(56);
+  if (phoff === 0 || phentsize !== 56 || phnum < 2 || phoff + phnum * phentsize > buf.length) {
+    return false;
+  }
+  const loads = [];
+  for (let i = 0; i < phnum; i++) {
+    const entryOff = phoff + i * phentsize;
+    if (buf.readUInt32LE(entryOff) === 1) {
+      loads.push({
+        offset: buf.readBigUInt64LE(entryOff + 8),
+        vaddr: buf.readBigUInt64LE(entryOff + 16),
+        memsz: buf.readBigUInt64LE(entryOff + 40)
+      });
+    }
+  }
+  for (let i = 0; i < loads.length; i++) {
+    for (let j = i + 1; j < loads.length; j++) {
+      const a = loads[i];
+      const b = loads[j];
+      const aEnd = a.vaddr + a.memsz;
+      const bEnd = b.vaddr + b.memsz;
+      if (a.vaddr < bEnd && b.vaddr < aEnd && a.offset !== b.offset) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 /**

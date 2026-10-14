@@ -1,6 +1,6 @@
 {
   "name": "anti-rea",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Counter-Reverse-Engineering, Binary Armor & Cryptographic Code-Lock Toolkit engineered to defeat AI reverse-engineering agents (morluto/rea, Ghidra, JADX, Wakaru, Frida).",
   "type": "module",
   "bin": {
@@ -15,6 +15,8 @@
     "reverse-engineering-defense",
     "anti-rea",
     "code-lock",
+    "v8-bytecode",
+    "tamper-bound-crypto",
     "obfuscation",
     "electron-fuses",
     "flutter-security",

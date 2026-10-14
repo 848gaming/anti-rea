@@ -65,6 +65,26 @@ export function auditTargetForRea(filePath) {
     };
   }
 
+  // Check if compiled to V8 Cached Bytecode (RJSC)
+  if (buf.length >= 12 && buf.subarray(0, 4).toString('utf8') === 'RJSC') {
+    return {
+      target: resolvedPath,
+      sha256,
+      size: buf.length,
+      detectedType: 'v8-bytecode-bundle',
+      reaExposureScore: 0,
+      riskLevel: 'PROTECTED (V8 BYTECODE)',
+      findings: [
+        {
+          surface: 'V8 Binary Cached Bytecode (.jsc)',
+          severity: 'NONE',
+          detail: 'Contains zero UTF-8 JavaScript source text. REA AST parsers and Wakaru cannot decompile V8 binary cachedData.'
+        }
+      ],
+      recommendations: []
+    };
+  }
+
   const findings = [];
   const recommendations = [];
   let exposurePoints = 0;
@@ -351,7 +371,10 @@ export function inspectFlutterAotInBuffer(buf) {
     '_kDartIsolateSnapshotData',
     '_kDartIsolateSnapshotInstructions'
   ];
-  const exportedSymbols = symbolNames.filter((sym) => buf.includes(Buffer.from(sym, 'utf8')));
+  const ptLoadConflictProtected = checkElf64PtLoadConflictInAudit(buf);
+  const rawSymbols = symbolNames.filter((sym) => buf.includes(Buffer.from(sym, 'utf8')));
+  // Per morluto/rea docs/flutter-analysis.md: conflicting overlapping PT_LOAD mappings leave symbols unresolved
+  const exportedSymbols = ptLoadConflictProtected ? [] : rawSymbols;
 
   const snapshotHashes = [];
   for (const magic of [DART_SNAPSHOT_MAGIC_LE, DART_SNAPSHOT_MAGIC_BE]) {
@@ -378,11 +401,53 @@ export function inspectFlutterAotInBuffer(buf) {
   const detected = exportedSymbols.length > 0 || snapshotHashes.length > 0 || packageUris.length > 0;
   return {
     detected,
+    ptLoadConflictProtected,
     exportedSymbols,
     snapshotHashes: [...new Set(snapshotHashes)],
     packageUris,
     dartUris
   };
+}
+
+function checkElf64PtLoadConflictInAudit(buf) {
+  if (
+    buf.length < 64 ||
+    buf[0] !== 0x7f ||
+    buf[1] !== 0x45 ||
+    buf[2] !== 0x4c ||
+    buf[3] !== 0x46 ||
+    buf[4] !== 0x02 ||
+    buf[5] !== 0x01
+  ) {
+    return false;
+  }
+  const phoff = Number(buf.readBigUInt64LE(32));
+  const phentsize = buf.readUInt16LE(54);
+  const phnum = buf.readUInt16LE(56);
+  if (phoff === 0 || phentsize !== 56 || phnum < 2 || phoff + phnum * phentsize > buf.length) {
+    return false;
+  }
+  const loads = [];
+  for (let i = 0; i < phnum; i++) {
+    const entryOff = phoff + i * phentsize;
+    if (buf.readUInt32LE(entryOff) === 1) {
+      loads.push({
+        offset: buf.readBigUInt64LE(entryOff + 8),
+        vaddr: buf.readBigUInt64LE(entryOff + 16),
+        memsz: buf.readBigUInt64LE(entryOff + 40)
+      });
+    }
+  }
+  for (let i = 0; i < loads.length; i++) {
+    for (let j = i + 1; j < loads.length; j++) {
+      const a = loads[i];
+      const b = loads[j];
+      if (a.vaddr < b.vaddr + b.memsz && b.vaddr < a.vaddr + a.memsz && a.offset !== b.offset) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 /**
